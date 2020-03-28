@@ -28,7 +28,7 @@
 #define GYRO_OFFSET_Z           66
 #define ACCEL_OFFSET_Z          (int)1471
 
-#define PID_SAMPLE_TIME         10  // in ms
+#define PID_SAMPLE_TIME         2  // in ms
 #define PID_OUTPUT_LIMIT_LO     -1023
 #define PID_OUTPUT_LIMIT_HI     1023
 
@@ -37,25 +37,28 @@
 
 const char* ssid = "";
 const char* password =  "";
-#define UPRIGHT_VALUE           186.0 // value at the upright position
-#define UPRIGHT_WINDOW          4
+#define UPRIGHT_VALUE           189.2 // value at the upright position
+#define UPRIGHT_WINDOW          3
 #define FALLING_THRESH_LO       (UPRIGHT_VALUE - UPRIGHT_WINDOW)
 #define FALLING_THRESH_HI       (UPRIGHT_VALUE + UPRIGHT_WINDOW)
 #define FALLEN_THRESH_FWD       250
 #define FALLEN_THRESH_BACK      120
 
 #define SETPOINT                UPRIGHT_VALUE  //set the value when the bot is perpendicular to ground using serial monitor. 
-#define KP                      30 //21; //Set this first
-#define KD                      0.8 //Set this secound
+#define KP                      100 //21; //Set this first
+#define KD                      0.75 //Set this secound
 #define KI                      150 //Finally set this 
+
+const char* host = "OTA-KEVIN";
+
 
 
 TelnetSpy SERIALAndTelnet;
 
-//#define WIFI_SERIAL
+#define WIFI_SERIAL
 
 #ifdef WIFI_SERIAL
-  #define SERIAL  SERIALAndTelnet
+  #define SERIAL  Serial //SERIALAndTelnet
 #else
   #define SERIAL  Serial
 #endif
@@ -74,7 +77,6 @@ uint8_t fifoBuffer[FIFO_BUFFER_SIZE]; // FIFO storage buffer
 Quaternion q;           // [w, x, y, z]         quaternion container
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-
 
 
 double setpoint = UPRIGHT_VALUE; //set the value when the bot is perpendicular to ground using serial monitor. 
@@ -115,7 +117,7 @@ void telnetDisconnected() {
   SERIAL.println("Telnet connection closed.");
 }
 
-
+bool isReady = false;
 
 void setup() 
 {
@@ -126,40 +128,13 @@ void setup()
       SERIALAndTelnet.setWelcomeMsg("Welcome to the TelnetSpy example\n\n");
   SERIALAndTelnet.setCallbackOnConnect(telnetConnected);
   SERIALAndTelnet.setCallbackOnDisconnect(telnetDisconnected);
-  SERIAL.begin(115200);
-  delay(100); // Wait for serial port
   SERIAL.setDebugOutput(false);
   SERIAL.print("\n\nConnecting to WiFi ");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   waitForConnection();
-    
-  // During updates "over the air" the telnet session will be closed.
-  // So the operations of ArduinoOTA cannot be seen via telnet.
-  // So we only use the standard "SERIAL" for logging.
-  ArduinoOTA.onStart([]() {
-    SERIAL.println("Start");
-  });
-  ArduinoOTA.onEnd([]() {
-    SERIAL.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    SERIAL.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    SERIAL.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) SERIAL.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) SERIAL.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) SERIAL.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) SERIAL.println("Receive Failed");
-    else if (error == OTA_END_ERROR) SERIAL.println("End Failed");
-  });
-  ArduinoOTA.begin();
-  
-  SERIAL.println("Ready");
-  SERIAL.print("IP address: ");
-  SERIAL.println(WiFi.localIP());
 
+  initOTA();
 #endif
   
     
@@ -228,9 +203,7 @@ void setup()
     InitMotorDriver();
 }
 
-void loop() {
-    
- 
+void loop() {    
     // if programming failed, don't try to do anything
     if (!dmpReady) 
     {
@@ -238,8 +211,8 @@ void loop() {
     }
 
     // wait for MPU interrupt or extra packet(s) available
-    while (!mpuInterrupt && fifoCount < packetSize)
-    {
+    while (!mpuInterrupt && (fifoCount < packetSize) && isReady)
+    {      
         //no mpu data - performing PID calculations and output to motors     
         pid.Compute();   
         
@@ -266,7 +239,9 @@ void loop() {
 
         }
         else //If Bot not falling
+        {
             Stop(); //Hold the wheels still
+        }
     }
 
     // reset interrupt flag and get INT_STATUS byte
@@ -282,6 +257,7 @@ void loop() {
         // reset so we can continue cleanly
         mpu.resetFIFO();
         SERIAL.println(F("FIFO overflow!"));
+        Stop();
 
     // otherwise, check for DMP data ready interrupt (this should happen frequently)
     }
@@ -302,10 +278,11 @@ void loop() {
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity); //get value for ypr
 
         input = ypr[1] * 180/M_PI + 180;
+        isReady = true;
    }
 #ifdef WIFI_SERIAL
-     SERIALAndTelnet.handle();
-  ArduinoOTA.handle();
+     //SERIALAndTelnet.handle();
+     ArduinoOTA.handle();
 #endif
 
 }
@@ -364,4 +341,45 @@ void Stop() //Code to stop both the wheels
     analogWrite(MOTOR_DRV_ENA,0);
     
     SERIAL.print("S");
+}
+
+void initOTA()
+{
+  ArduinoOTA.setHostname(host);
+  ArduinoOTA.onStart([]() {
+    String type;
+    Stop(); // stop the motors
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_SPIFFS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    Serial.println("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End Failed");
+    }
+  });
+  ArduinoOTA.begin();
+  Serial.println("Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
 }
