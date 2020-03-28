@@ -14,10 +14,13 @@
 
 #define SERIAL_BAUD             115200
 
-#define MOTOR_DRV_IN1           5
-#define MOTOR_DRV_IN2           4
-#define MOTOR_DRV_IN3           0
-#define MOTOR_DRV_IN4           2
+#define MOTOR_DRV_IN1           16
+#define MOTOR_DRV_IN2           5
+#define MOTOR_DRV_IN3           4
+#define MOTOR_DRV_IN4           0
+#define MOTOR_DRV_ENA           2
+#define MOTOR_DRV_ENB           15
+
 #define MPU_INTERRUPT_PIN       13
 
 #define GYRO_OFFSET_X           104
@@ -26,25 +29,35 @@
 #define ACCEL_OFFSET_Z          (int)1471
 
 #define PID_SAMPLE_TIME         10  // in ms
-#define PID_OUTPUT_LIMIT_LO     -255
-#define PID_OUTPUT_LIMIT_HI     255
+#define PID_OUTPUT_LIMIT_LO     -1023
+#define PID_OUTPUT_LIMIT_HI     1023
 
 #define FIFO_BUFFER_SIZE        64
 
-#define FALLING_THRESH_LO       186
-#define FALLING_THRESH_HI       192
 
 const char* ssid = "";
 const char* password =  "";
+#define UPRIGHT_VALUE           186.0 // value at the upright position
+#define UPRIGHT_WINDOW          4
+#define FALLING_THRESH_LO       (UPRIGHT_VALUE - UPRIGHT_WINDOW)
+#define FALLING_THRESH_HI       (UPRIGHT_VALUE + UPRIGHT_WINDOW)
+#define FALLEN_THRESH_FWD       250
+#define FALLEN_THRESH_BACK      120
+
+#define SETPOINT                UPRIGHT_VALUE  //set the value when the bot is perpendicular to ground using serial monitor. 
+#define KP                      30 //21; //Set this first
+#define KD                      0.8 //Set this secound
+#define KI                      150 //Finally set this 
+
 
 TelnetSpy SERIALAndTelnet;
 
-#define WIFI_SERIAL
+//#define WIFI_SERIAL
 
 #ifdef WIFI_SERIAL
   #define SERIAL  SERIALAndTelnet
 #else
-  #define SERIAL  SERIAL
+  #define SERIAL  Serial
 #endif
 
 MPU6050 mpu;
@@ -62,16 +75,12 @@ Quaternion q;           // [w, x, y, z]         quaternion container
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
-/*********Tune these 4 values for your BOT*********/
-double setpoint= 189; //set the value when the bot is perpendicular to ground using serial monitor. 
-//Read the project documentation on circuitdigest.com to learn how to set these values
-double Kp = 30;//21; //Set this first
-double Kd = 0.8; //Set this secound
-double Ki = 140; //Finally set this 
-/******End of values setting*********/
+
+
+double setpoint = UPRIGHT_VALUE; //set the value when the bot is perpendicular to ground using serial monitor. 
 
 double input, output;
-PID pid(&input, &output, &setpoint, Kp, Ki, Kd, DIRECT);
+PID pid(&input, &output, &setpoint, KP, KI, KD, DIRECT);
 
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
 
@@ -240,10 +249,21 @@ void loop() {
         //If the Bot is falling  
         if ((input < FALLING_THRESH_LO) || (input > FALLING_THRESH_HI))
         {
-            if (output > 0) //Falling towards front 
-                Reverse(); //Rotate the wheels forward 
-            else if (output < 0) //Falling towards back
-                Forward(); //Rotate the wheels backward 
+            // check if we have fallen over completely, if so lets not try and get back up
+            if((input < FALLEN_THRESH_BACK) || (input > FALLEN_THRESH_FWD))
+            {
+              Stop();
+            }
+            else
+            {
+              // otherwise try and compensate for the angle that we are at
+              if (output > 0) //Falling towards front 
+                  Reverse(output); //Rotate the wheels forward 
+              else if (output < 0) //Falling towards back
+                  Forward(output * -1); //Rotate the wheels backward 
+            }
+
+
         }
         else //If Bot not falling
             Stop(); //Hold the wheels still
@@ -297,37 +317,51 @@ void InitMotorDriver()
     pinMode (MOTOR_DRV_IN3, OUTPUT);
     pinMode (MOTOR_DRV_IN2, OUTPUT);
     pinMode (MOTOR_DRV_IN1, OUTPUT);
+    pinMode (MOTOR_DRV_ENA, OUTPUT);
+    pinMode (MOTOR_DRV_ENB, OUTPUT);
 
     //By default turn off both the motors
-    analogWrite(MOTOR_DRV_IN4,LOW);
-    analogWrite(MOTOR_DRV_IN3,LOW);
-    analogWrite(MOTOR_DRV_IN2,LOW);
-    analogWrite(MOTOR_DRV_IN1,LOW);
+    digitalWrite(MOTOR_DRV_IN4,LOW);
+    digitalWrite(MOTOR_DRV_IN3,LOW);
+    digitalWrite(MOTOR_DRV_IN2,LOW);
+    digitalWrite(MOTOR_DRV_IN1,LOW);
+    analogWrite(MOTOR_DRV_ENA,LOW);
+    analogWrite(MOTOR_DRV_ENB,LOW);
 }
 
-void Forward() //Code to rotate the wheel forward 
+void Forward(int drive) //Code to rotate the wheel forward 
 {
-    analogWrite(MOTOR_DRV_IN4,output*-1);
-    analogWrite(MOTOR_DRV_IN3,0);
-    analogWrite(MOTOR_DRV_IN2,output*-1);
-    analogWrite(MOTOR_DRV_IN1,0);
+    digitalWrite(MOTOR_DRV_IN4,HIGH);
+    digitalWrite(MOTOR_DRV_IN3,LOW);
+    digitalWrite(MOTOR_DRV_IN2,HIGH);
+    digitalWrite(MOTOR_DRV_IN1,LOW);
+    analogWrite(MOTOR_DRV_ENB,drive);
+    analogWrite(MOTOR_DRV_ENA,drive);
+    
     SERIAL.print("F"); //Debugging information 
 }
 
-void Reverse() //Code to rotate the wheel Backward  
+void Reverse(int drive) //Code to rotate the wheel Backward  
 {
-    analogWrite(MOTOR_DRV_IN4,0);
-    analogWrite(MOTOR_DRV_IN3,output);
-    analogWrite(MOTOR_DRV_IN2,0);
-    analogWrite(MOTOR_DRV_IN1,output); 
+    digitalWrite(MOTOR_DRV_IN4,LOW);
+    digitalWrite(MOTOR_DRV_IN3,HIGH);
+    digitalWrite(MOTOR_DRV_IN2,LOW);
+    digitalWrite(MOTOR_DRV_IN1,HIGH);
+    analogWrite(MOTOR_DRV_ENB,drive);
+    analogWrite(MOTOR_DRV_ENA,drive);
+    
+    
     SERIAL.print("R");
 }
 
 void Stop() //Code to stop both the wheels
 {
-    analogWrite(MOTOR_DRV_IN4,0);
-    analogWrite(MOTOR_DRV_IN3,0);
-    analogWrite(MOTOR_DRV_IN2,0);
-    analogWrite(MOTOR_DRV_IN1,0); 
+    digitalWrite(MOTOR_DRV_IN4,LOW);
+    digitalWrite(MOTOR_DRV_IN3,LOW);
+    digitalWrite(MOTOR_DRV_IN2,LOW);
+    digitalWrite(MOTOR_DRV_IN1,LOW);
+    analogWrite(MOTOR_DRV_ENB,0);
+    analogWrite(MOTOR_DRV_ENA,0);
+    
     SERIAL.print("S");
 }
